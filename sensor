@@ -1,1 +1,301 @@
+#include <kaulab.h>
 
+
+volatile int lineState = S1_OUT_S2_OUT;
+
+
+const int OBSTACLE_AVSTAND = 20; // om ett objekt är 0 cm eller närmare räknar det som hinder
+volatile int obstacleDistance = 0;
+volatile bool hinder_finns = false; // variabeln som säger om ett hinder finns 
+// jag använder volatile eftersom vi använder flera task i programmet 
+
+
+
+const int SPEED=80;
+const int TURN_SPEED = 60;
+
+
+
+int turnCounter = 0; //det räknar som börjar på 0 
+const int TURN_STEPS = 4; // sving i 4 körningar av contoltask
+
+
+int moveCounter = 0;//räknar hur länge roboten har kört inåt.
+const int MOVE_STEPS = 5;
+
+int passCounter = 0;// äknar hur länge roboten har kört bredvid hindret
+const int PASS_STEPS = 10;
+
+
+int obstacleCooldown = 0; //räknar hur länge roboten tillfälligt ska ignorera hinder efter undanmanövern.
+const int COOLDOWN_STEPS = 5;
+
+
+enum RobotState// skapar en typ med olika lägen som roboten kan vara i 
+{
+    FOLLOW_LINE,
+    TURN_INSIDE,
+    MOVE_INSIDE,
+    TURN_PARALLEL,
+    PASS_OBSTACLE,
+    TURN_TO_LINE,
+    FIND_LINE,
+};
+
+RobotState robotState = FOLLOW_LINE; // när roboten startar är den i läget follow
+
+
+
+
+// task 1
+void banaTask()
+{
+    lineState = zRobotGetLineSensor();
+
+    switch (lineState)
+    {
+        case S1_IN_S2_IN:
+            Serial.println("Bada sensorerna ar pa linjen");
+            break;
+
+        case S1_IN_S2_OUT:
+            Serial.println("Sensor 1 ar pa linjen");
+            break;
+
+        case S1_OUT_S2_IN:
+            Serial.println("Sensor 2 ar pa linjen");
+            break;
+
+        case S1_OUT_S2_OUT:
+            Serial.println("Bada sensorerna ar utanfor linjen");
+            break;
+    }
+}
+
+
+
+void ultrasonicTask()
+{
+    obstacleDistance = zRobotGetUltraSensor();// läs värdet och spara 
+
+// om sensorna ger ett positivt värde och avståndet är 20 eller mindre då hinder finns 
+    if (obstacleDistance > 0 &&
+        obstacleDistance <= OBSTACLE_AVSTAND)
+    {
+        hinder_finns = true;
+    }
+    else
+    {
+        hinder_finns = false;
+    }
+}
+
+
+
+void controlTask()
+{
+    
+// följ linjen 
+    if (robotState == FOLLOW_LINE)
+    {
+        // Minska cooldown om den är aktiv
+        if (obstacleCooldown > 0)
+        {
+            obstacleCooldown--;
+        }
+
+
+        // Om ett hinder finns:
+        if (hinder_finns && obstacleCooldown == 0)
+        {
+
+            // Stoppa först
+            zRobotSetMotorSpeed(1, 0);
+            zRobotSetMotorSpeed(2, 0);
+            robotState = TURN_INSIDE;
+        }
+
+        else
+        {
+            // Följ linjen
+            switch (lineState)
+            {
+                case S1_IN_S2_IN:
+                    // Kör rakt
+                    zRobotSetMotorSpeed(1, -SPEED);
+                    zRobotSetMotorSpeed(2, SPEED);
+                    break;
+
+
+                case S1_IN_S2_OUT:
+                    // Korrigera åt ena sidan
+                    zRobotSetMotorSpeed(1, -SPEED );
+                    zRobotSetMotorSpeed(2, SPEED/2);
+                    break;
+
+
+                case S1_OUT_S2_IN:
+                    // Korrigera åt andra sidan
+                    zRobotSetMotorSpeed(1, -SPEED);
+                    zRobotSetMotorSpeed(2, -SPEED / 2);
+                    break;
+
+
+                case S1_OUT_S2_OUT:
+                     // Linjen tappad -> stoppa
+                    zRobotSetMotorSpeed(1, 0);
+                    zRobotSetMotorSpeed(2, 0);
+                    break;
+            }
+        }
+    }
+
+
+    
+// sväng inut i banan 
+    else if (robotState == TURN_INSIDE)
+    {
+        zRobotSetMotorSpeed(1, TURN_SPEED);
+        zRobotSetMotorSpeed(2, TURN_SPEED);
+
+        turnCounter++;
+
+        if (turnCounter >= TURN_STEPS)
+        {
+            turnCounter = 0;
+
+            robotState = MOVE_INSIDE;
+        }
+    }
+
+
+    // kör innut  i banan 
+    else if (robotState == MOVE_INSIDE)
+    {
+        zRobotSetMotorSpeed(1, -SPEED);
+        zRobotSetMotorSpeed(2, SPEED);
+
+        moveCounter++;
+
+        if (moveCounter >= MOVE_STEPS)
+        {
+            moveCounter = 0;
+
+            robotState = TURN_PARALLEL;
+        }
+    }
+
+
+    //Rätta upp roboten 
+    else if (robotState == TURN_PARALLEL)
+    {
+        // Motsatt håll mot första svängen
+        zRobotSetMotorSpeed(1, -TURN_SPEED);
+        zRobotSetMotorSpeed(2, -TURN_SPEED);
+
+        turnCounter++;
+
+        if (turnCounter >= TURN_STEPS)
+        {
+            turnCounter = 0;
+
+            robotState = PASS_OBSTACLE;
+        }
+    }
+
+
+    
+// kör förbi hindret 
+    else if (robotState == PASS_OBSTACLE)
+    {
+        zRobotSetMotorSpeed(1, -SPEED);
+        zRobotSetMotorSpeed(2, SPEED);
+
+        passCounter++;
+
+        if (passCounter >= PASS_STEPS)
+        {
+            passCounter = 0;
+
+            robotState = TURN_TO_LINE;
+        }
+    }
+
+
+    //sväng tillbacka till linjen 
+
+    else if (robotState == TURN_TO_LINE)
+    {
+        zRobotSetMotorSpeed(1, -TURN_SPEED);
+        zRobotSetMotorSpeed(2, -TURN_SPEED);
+
+        turnCounter++;
+
+        if (turnCounter >= TURN_STEPS)
+        {
+            turnCounter = 0;
+
+            robotState = FIND_LINE;
+        }
+    }
+
+// hitta linjen 
+    else if (robotState == FIND_LINE)
+    {
+        // Kör framåt mot linjen
+        zRobotSetMotorSpeed(1, -SPEED);
+        zRobotSetMotorSpeed(2, SPEED);
+
+
+        // När minst en sensor hittar svart
+        if (lineState != S1_OUT_S2_OUT)
+        {
+            obstacleCooldown = COOLDOWN_STEPS;
+
+            robotState = FOLLOW_LINE;
+        }
+    }
+}
+
+
+
+
+void setup() 
+{
+
+
+   zInitialize(); 
+   Serial.begin(9600);
+
+//linjesensor 
+ zScheduleTask(
+        banaTask,
+        pdMS_TO_TICKS(100), // lägg bana task i sceudlern och kör den var 100ms
+        pdMS_TO_TICKS(20)
+    );
+
+
+
+ //ultraljud
+    zScheduleTask(
+        ultrasonicTask,
+        pdMS_TO_TICKS(200),
+        pdMS_TO_TICKS(50)
+    );
+
+
+//  motorstyrning
+    zScheduleTask(
+        controlTask,
+        pdMS_TO_TICKS(100),
+        pdMS_TO_TICKS(20)
+    );
+
+    zStart();
+}
+
+void loop() 
+{
+
+   
+}
