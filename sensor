@@ -12,7 +12,7 @@ volatile bool hinder_finns = false; // variabeln som säger om ett hinder finns
 
 
 const int SPEED=80;
-const int TURN_SPEED = 60;
+const int TURN_SPEED = 80;
 
 
 
@@ -128,16 +128,16 @@ void controlTask()
 
 
                 case S1_IN_S2_OUT:
-                    // Korrigera åt ena sidan
-                    zRobotSetMotorSpeed(1, -SPEED );
-                    zRobotSetMotorSpeed(2, SPEED/2);
+                    // Korrigera åt ena sidan // vänster
+                     zRobotSetMotorSpeed(1, -SPEED);
+                     zRobotSetMotorSpeed(2, SPEED/ 2);
                     break;
 
 
                 case S1_OUT_S2_IN:
                     // Korrigera åt andra sidan
-                    zRobotSetMotorSpeed(1, -SPEED);
-                    zRobotSetMotorSpeed(2, -SPEED / 2);
+                    zRobotSetMotorSpeed(1, -SPEED / 2);
+                    zRobotSetMotorSpeed(2, SPEED);
                     break;
 
 
