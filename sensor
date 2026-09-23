@@ -11,17 +11,21 @@ volatile bool hinder_finns = false; // variabeln som säger om ett hinder finns
 
 
 
+// fixar jag att den ska gå på insedan bara  
+const bool INSIDE_IS_LEFT = true;
+
 const int SPEED=80;
 const int TURN_SPEED = 80;
 
-
+//här 
+int lastLineSide=0;
 
 int turnCounter = 0; //det räknar som börjar på 0 
 const int TURN_STEPS = 4; // sving i 4 körningar av contoltask
 
 
 int moveCounter = 0;//räknar hur länge roboten har kört inåt.
-const int MOVE_STEPS = 5;
+const int MOVE_STEPS = 7;// den var innan 5 
 
 int passCounter = 0;// äknar hur länge roboten har kört bredvid hindret
 const int PASS_STEPS = 10;
@@ -52,24 +56,6 @@ void banaTask()
 {
     lineState = zRobotGetLineSensor();
 
-    switch (lineState)
-    {
-        case S1_IN_S2_IN:
-            Serial.println("Bada sensorerna ar pa linjen");
-            break;
-
-        case S1_IN_S2_OUT:
-            Serial.println("Sensor 1 ar pa linjen");
-            break;
-
-        case S1_OUT_S2_IN:
-            Serial.println("Sensor 2 ar pa linjen");
-            break;
-
-        case S1_OUT_S2_OUT:
-            Serial.println("Bada sensorerna ar utanfor linjen");
-            break;
-    }
 }
 
 
@@ -131,6 +117,7 @@ void controlTask()
                     // Korrigera åt ena sidan // vänster
                      zRobotSetMotorSpeed(1, -SPEED);
                      zRobotSetMotorSpeed(2, SPEED/ 2);
+                     lastLineSide = -1;
                     break;
 
 
@@ -138,14 +125,27 @@ void controlTask()
                     // Korrigera åt andra sidan
                     zRobotSetMotorSpeed(1, -SPEED / 2);
                     zRobotSetMotorSpeed(2, SPEED);
+                    lastLineSide = 1;
                     break;
 
 
                 case S1_OUT_S2_OUT:
-                     // Linjen tappad -> stoppa
-                    zRobotSetMotorSpeed(1, 0);
-                    zRobotSetMotorSpeed(2, 0);
-                    break;
+                if (lastLineSide < 0)
+                {
+                   zRobotSetMotorSpeed(1, -TURN_SPEED);
+                   zRobotSetMotorSpeed(2, -TURN_SPEED);
+                }
+                 else if (lastLineSide > 0)
+                {
+                 zRobotSetMotorSpeed(1, TURN_SPEED);
+                 zRobotSetMotorSpeed(2, TURN_SPEED);
+                }
+                else
+                {
+                 zRobotSetMotorSpeed(1, 0);
+                 zRobotSetMotorSpeed(2, 0);
+                }
+                 break;
             }
         }
     }
@@ -154,19 +154,26 @@ void controlTask()
     
 // sväng inut i banan 
     else if (robotState == TURN_INSIDE)
+{
+    if (INSIDE_IS_LEFT)
+    {
+        zRobotSetMotorSpeed(1, -TURN_SPEED);
+        zRobotSetMotorSpeed(2, -TURN_SPEED);
+    }
+    else
     {
         zRobotSetMotorSpeed(1, TURN_SPEED);
         zRobotSetMotorSpeed(2, TURN_SPEED);
-
-        turnCounter++;
-
-        if (turnCounter >= TURN_STEPS)
-        {
-            turnCounter = 0;
-
-            robotState = MOVE_INSIDE;
-        }
     }
+
+    turnCounter++;
+
+    if (turnCounter >= TURN_STEPS)
+    {
+        turnCounter = 0;
+        robotState = MOVE_INSIDE;
+    }
+}
 
 
     // kör innut  i banan 
@@ -188,20 +195,26 @@ void controlTask()
 
     //Rätta upp roboten 
     else if (robotState == TURN_PARALLEL)
+{
+    if (INSIDE_IS_LEFT)
     {
-        // Motsatt håll mot första svängen
+        zRobotSetMotorSpeed(1, TURN_SPEED);
+        zRobotSetMotorSpeed(2, TURN_SPEED);
+    }
+    else
+    {
         zRobotSetMotorSpeed(1, -TURN_SPEED);
         zRobotSetMotorSpeed(2, -TURN_SPEED);
-
-        turnCounter++;
-
-        if (turnCounter >= TURN_STEPS)
-        {
-            turnCounter = 0;
-
-            robotState = PASS_OBSTACLE;
-        }
     }
+
+    turnCounter++;
+
+    if (turnCounter >= TURN_STEPS)
+    {
+        turnCounter = 0;
+        robotState = PASS_OBSTACLE;
+    }
+}
 
 
     
@@ -225,19 +238,26 @@ void controlTask()
     //sväng tillbacka till linjen 
 
     else if (robotState == TURN_TO_LINE)
+{
+    if (INSIDE_IS_LEFT)
+    {
+        zRobotSetMotorSpeed(1, TURN_SPEED);
+        zRobotSetMotorSpeed(2, TURN_SPEED);
+    }
+    else
     {
         zRobotSetMotorSpeed(1, -TURN_SPEED);
         zRobotSetMotorSpeed(2, -TURN_SPEED);
-
-        turnCounter++;
-
-        if (turnCounter >= TURN_STEPS)
-        {
-            turnCounter = 0;
-
-            robotState = FIND_LINE;
-        }
     }
+
+    turnCounter++;
+
+    if (turnCounter >= TURN_STEPS)
+    {
+        turnCounter = 0;
+        robotState = FIND_LINE;
+    }
+}
 
 // hitta linjen 
     else if (robotState == FIND_LINE)
@@ -279,7 +299,7 @@ void setup()
  //ultraljud
     zScheduleTask(
         ultrasonicTask,
-        pdMS_TO_TICKS(200),
+        pdMS_TO_TICKS(100),
         pdMS_TO_TICKS(50)
     );
 
