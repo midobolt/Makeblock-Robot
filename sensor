@@ -1,41 +1,103 @@
 #include <kaulab.h>
 
 
-volatile int lineState = S1_OUT_S2_OUT;
+// ======================================================
+// INSTÄLLNINGAR
+// ======================================================
+
+// Börja undanmanövern tidigare än 20 cm.
+// Det ger robotens hela bredd mer säkerhetsmarginal.
+const int OBSTACLE_DISTANCE = 20;
 
 
-const int OBSTACLE_AVSTAND = 20; // om ett objekt är 0 cm eller närmare räknar det som hinder
-volatile int obstacleDistance = 0;
-volatile bool hinder_finns = false; // variabeln som säger om ett hinder finns 
-// jag använder volatile eftersom vi använder flera task i programmet 
+// Normal körning på linjen
+const int SPEED = 80;
 
+// Kör lite lugnare bredvid hindret
+const int AVOID_SPEED = 70;
 
-
-// fixar jag att den ska gå på insedan bara  
-const bool INSIDE_IS_LEFT = true;
-
-const int SPEED=80;
+// Svänghastighet
 const int TURN_SPEED = 80;
 
-//här 
-int lastLineSide=0;
 
-int turnCounter = 0; //det räknar som börjar på 0 
-const int TURN_STEPS = 4; // sving i 4 körningar av contoltask
+// ======================================================
+// HINDERUNDVIKNING
+// ======================================================
+
+// controlTask körs var 100 ms.
+
+// Svängen som tar roboten bort från linjen
+const int TURN_STEPS = 4;
+
+// Hur långt roboten flyttar sig IN i banan.
+// Större värde = större avstånd från hindret.
+const int MOVE_INSIDE_STEPS = 11;
+
+// Hur långt roboten kör bredvid hindret.
+// Större värde = passerar hindret längre innan återgång.
+const int PASS_STEPS = 16;
+
+// Hur länge samma hinder ignoreras efteråt
+const int COOLDOWN_STEPS = 8;
 
 
-int moveCounter = 0;//räknar hur länge roboten har kört inåt.
-const int MOVE_STEPS = 7;// den var innan 5 
+// ======================================================
+// INFORMATION FRÅN SENSORERNA
+// ======================================================
 
-int passCounter = 0;// äknar hur länge roboten har kört bredvid hindret
-const int PASS_STEPS = 10;
+// Task 1 skriver denna
+volatile int lineState = S1_OUT_S2_OUT;
+
+// Task 2 skriver dessa
+volatile int obstacleDistance = 0;
+volatile bool obstacleDetected = false;
 
 
-int obstacleCooldown = 0; //räknar hur länge roboten tillfälligt ska ignorera hinder efter undanmanövern.
-const int COOLDOWN_STEPS = 5;
+// ======================================================
+// INFORMATION OM BANANS RIKTNING
+// ======================================================
+
+// Senaste sidan linjen syntes på.
+//
+// -1 = första sidan
+//  1 = andra sidan
+//  0 = ingen information ännu
+int lastLineSide = 0;
 
 
-enum RobotState// skapar en typ med olika lägen som roboten kan vara i 
+// Vi använder robotens korrigeringar på den ovala banan
+// för att förstå vilken sida som är INSIDAN.
+//
+// Negativt = ena färdriktningen
+// Positivt = motsatta färdriktningen
+int curveScore = 0;
+
+const int CURVE_THRESHOLD = 3;
+const int CURVE_LIMIT = 8;
+
+
+// Vilket håll roboten ska svänga för att gå inåt.
+//
+// -1 = sväng med negativa motorvärden
+//  1 = sväng med positiva motorvärden
+int insideTurn = 0;
+
+
+// ======================================================
+// RÄKNARE
+// ======================================================
+
+int turnCounter = 0;
+int moveCounter = 0;
+int passCounter = 0;
+int obstacleCooldown = 0;
+
+
+// ======================================================
+// ROBOTENS TILLSTÅND
+// ======================================================
+
+enum RobotState
 {
     FOLLOW_LINE,
     TURN_INSIDE,
@@ -43,148 +105,269 @@ enum RobotState// skapar en typ med olika lägen som roboten kan vara i
     TURN_PARALLEL,
     PASS_OBSTACLE,
     TURN_TO_LINE,
-    FIND_LINE,
+    FIND_LINE
 };
 
-RobotState robotState = FOLLOW_LINE; // när roboten startar är den i läget follow
+RobotState robotState = FOLLOW_LINE;
 
 
+// ======================================================
+// TASK 1
+// LÄS LINJESENSORN
+// ======================================================
 
-
-// task 1
-void banaTask()
+void lineTask()
 {
     lineState = zRobotGetLineSensor();
-
 }
 
 
+// ======================================================
+// TASK 2
+// LÄS ULTRALJUDSSENSORN
+// ======================================================
 
 void ultrasonicTask()
 {
-    obstacleDistance = zRobotGetUltraSensor();// läs värdet och spara 
+    obstacleDistance = zRobotGetUltraSensor();
 
-// om sensorna ger ett positivt värde och avståndet är 20 eller mindre då hinder finns 
     if (obstacleDistance > 0 &&
-        obstacleDistance <= OBSTACLE_AVSTAND)
+        obstacleDistance <= OBSTACLE_DISTANCE)
     {
-        hinder_finns = true;
+        obstacleDetected = true;
     }
     else
     {
-        hinder_finns = false;
+        obstacleDetected = false;
     }
 }
 
 
+// ======================================================
+// TASK 3
+// ALL MOTORSTYRNING
+// ======================================================
 
 void controlTask()
 {
-    
-// följ linjen 
+
+    // ==================================================
+    // NORMAL KÖRNING
+    // ==================================================
+
     if (robotState == FOLLOW_LINE)
     {
-        // Minska cooldown om den är aktiv
+        // Cooldown efter att ett hinder passerats
         if (obstacleCooldown > 0)
         {
             obstacleCooldown--;
         }
 
 
-        // Om ett hinder finns:
-        if (hinder_finns && obstacleCooldown == 0)
-        {
+        // --------------------------------------------------
+        // HINDER UPPTÄCKT
+        // --------------------------------------------------
 
-            // Stoppa först
+        if (obstacleDetected && obstacleCooldown == 0)
+        {
+            // Stoppa roboten
             zRobotSetMotorSpeed(1, 0);
             zRobotSetMotorSpeed(2, 0);
+
+            // Börja alla räknare från 0
+            turnCounter = 0;
+            moveCounter = 0;
+            passCounter = 0;
+
+
+            /*
+               Bestäm vilken sida som är insidan.
+
+               Om roboten har följt en kurva har curveScore
+               redan lärt sig vilket håll banan svänger.
+            */
+
+            if (curveScore <= -CURVE_THRESHOLD)
+            {
+                insideTurn = -1;
+            }
+
+            else if (curveScore >= CURVE_THRESHOLD)
+            {
+                insideTurn = 1;
+            }
+
+            // Om vi ännu inte har tillräcklig information
+            // använder vi senaste linjekorrigeringen.
+            else if (lastLineSide != 0)
+            {
+                insideTurn = lastLineSide;
+            }
+
+            // Reserv om roboten startar precis framför hindret
+            // innan den hunnit läsa banans riktning.
+            else
+            {
+                insideTurn = -1;
+            }
+
+
             robotState = TURN_INSIDE;
         }
 
+
+        // --------------------------------------------------
+        // INGET HINDER -> FÖLJ LINJEN
+        // --------------------------------------------------
+
         else
         {
-            // Följ linjen
             switch (lineState)
             {
+
+                // ==================================================
+                // 0 - BÅDA SENSORERNA PÅ LINJEN
+                // ==================================================
+
                 case S1_IN_S2_IN:
+                {
                     // Kör rakt
                     zRobotSetMotorSpeed(1, -SPEED);
                     zRobotSetMotorSpeed(2, SPEED);
-                    break;
 
+                    break;
+                }
+
+
+                // ==================================================
+                // 1 - SENSOR 1 PÅ LINJEN
+                // ==================================================
 
                 case S1_IN_S2_OUT:
-                    // Korrigera åt ena sidan // vänster
-                     zRobotSetMotorSpeed(1, -SPEED);
-                     zRobotSetMotorSpeed(2, SPEED/ 2);
-                     lastLineSide = -1;
-                    break;
+                {
+                    // Mjuk korrigering
+                    zRobotSetMotorSpeed(1, -SPEED);
+                    zRobotSetMotorSpeed(2, SPEED / 2);
 
+                    lastLineSide = -1;
+
+
+                    // Kom ihåg åt vilket håll banan brukar kurva
+                    if (curveScore > -CURVE_LIMIT)
+                    {
+                        curveScore--;
+                    }
+
+                    break;
+                }
+
+
+                // ==================================================
+                // 2 - SENSOR 2 PÅ LINJEN
+                // ==================================================
 
                 case S1_OUT_S2_IN:
-                    // Korrigera åt andra sidan
+                {
+                    // Mjuk korrigering åt andra hållet
                     zRobotSetMotorSpeed(1, -SPEED / 2);
                     zRobotSetMotorSpeed(2, SPEED);
-                    lastLineSide = 1;
-                    break;
 
+                    lastLineSide = 1;
+
+
+                    if (curveScore < CURVE_LIMIT)
+                    {
+                        curveScore++;
+                    }
+
+                    break;
+                }
+
+
+                // ==================================================
+                // 3 - BÅDA SENSORERNA PÅ VITT
+                // ==================================================
 
                 case S1_OUT_S2_OUT:
-                if (lastLineSide < 0)
                 {
-                   zRobotSetMotorSpeed(1, -TURN_SPEED);
-                   zRobotSetMotorSpeed(2, -TURN_SPEED);
+                    /*
+                       Robotens line-following tappar ibland linjen.
+                       Då fortsätter den leta åt det håll där
+                       linjen senast fanns.
+                    */
+
+                    if (lastLineSide < 0)
+                    {
+                        zRobotSetMotorSpeed(1, -TURN_SPEED);
+                        zRobotSetMotorSpeed(2, -TURN_SPEED);
+                    }
+
+                    else if (lastLineSide > 0)
+                    {
+                        zRobotSetMotorSpeed(1, TURN_SPEED);
+                        zRobotSetMotorSpeed(2, TURN_SPEED);
+                    }
+
+                    else
+                    {
+                        zRobotSetMotorSpeed(1, 0);
+                        zRobotSetMotorSpeed(2, 0);
+                    }
+
+                    break;
                 }
-                 else if (lastLineSide > 0)
-                {
-                 zRobotSetMotorSpeed(1, TURN_SPEED);
-                 zRobotSetMotorSpeed(2, TURN_SPEED);
-                }
-                else
-                {
-                 zRobotSetMotorSpeed(1, 0);
-                 zRobotSetMotorSpeed(2, 0);
-                }
-                 break;
             }
         }
     }
 
 
-    
-// sväng inut i banan 
+    // ==================================================
+    // STEG 1
+    // SVÄNG BORT FRÅN LINJEN MOT INSIDAN
+    // ==================================================
+
     else if (robotState == TURN_INSIDE)
-{
-    if (INSIDE_IS_LEFT)
     {
-        zRobotSetMotorSpeed(1, -TURN_SPEED);
-        zRobotSetMotorSpeed(2, -TURN_SPEED);
+        if (insideTurn < 0)
+        {
+            zRobotSetMotorSpeed(1, -TURN_SPEED);
+            zRobotSetMotorSpeed(2, -TURN_SPEED);
+        }
+
+        else
+        {
+            zRobotSetMotorSpeed(1, TURN_SPEED);
+            zRobotSetMotorSpeed(2, TURN_SPEED);
+        }
+
+
+        turnCounter++;
+
+
+        if (turnCounter >= TURN_STEPS)
+        {
+            turnCounter = 0;
+
+            robotState = MOVE_INSIDE;
+        }
     }
-    else
-    {
-        zRobotSetMotorSpeed(1, TURN_SPEED);
-        zRobotSetMotorSpeed(2, TURN_SPEED);
-    }
-
-    turnCounter++;
-
-    if (turnCounter >= TURN_STEPS)
-    {
-        turnCounter = 0;
-        robotState = MOVE_INSIDE;
-    }
-}
 
 
-    // kör innut  i banan 
+    // ==================================================
+    // STEG 2
+    // KÖR LÄNGRE IN I BANAN
+    // ==================================================
+
     else if (robotState == MOVE_INSIDE)
     {
-        zRobotSetMotorSpeed(1, -SPEED);
-        zRobotSetMotorSpeed(2, SPEED);
+        zRobotSetMotorSpeed(1, -AVOID_SPEED);
+        zRobotSetMotorSpeed(2, AVOID_SPEED);
+
 
         moveCounter++;
 
-        if (moveCounter >= MOVE_STEPS)
+
+        if (moveCounter >= MOVE_INSIDE_STEPS)
         {
             moveCounter = 0;
 
@@ -193,38 +376,56 @@ void controlTask()
     }
 
 
-    //Rätta upp roboten 
+    // ==================================================
+    // STEG 3
+    // RÄTA UPP ROBOTEN
+    // ==================================================
+
     else if (robotState == TURN_PARALLEL)
-{
-    if (INSIDE_IS_LEFT)
     {
-        zRobotSetMotorSpeed(1, TURN_SPEED);
-        zRobotSetMotorSpeed(2, TURN_SPEED);
+        /*
+           Vi svänger nu åt MOTSATT håll från TURN_INSIDE
+           så roboten pekar ungefär parallellt med banan.
+        */
+
+        if (insideTurn < 0)
+        {
+            zRobotSetMotorSpeed(1, TURN_SPEED);
+            zRobotSetMotorSpeed(2, TURN_SPEED);
+        }
+
+        else
+        {
+            zRobotSetMotorSpeed(1, -TURN_SPEED);
+            zRobotSetMotorSpeed(2, -TURN_SPEED);
+        }
+
+
+        turnCounter++;
+
+
+        if (turnCounter >= TURN_STEPS)
+        {
+            turnCounter = 0;
+
+            robotState = PASS_OBSTACLE;
+        }
     }
-    else
-    {
-        zRobotSetMotorSpeed(1, -TURN_SPEED);
-        zRobotSetMotorSpeed(2, -TURN_SPEED);
-    }
-
-    turnCounter++;
-
-    if (turnCounter >= TURN_STEPS)
-    {
-        turnCounter = 0;
-        robotState = PASS_OBSTACLE;
-    }
-}
 
 
-    
-// kör förbi hindret 
+    // ==================================================
+    // STEG 4
+    // KÖR FÖRBI HELA HINDRET
+    // ==================================================
+
     else if (robotState == PASS_OBSTACLE)
     {
-        zRobotSetMotorSpeed(1, -SPEED);
-        zRobotSetMotorSpeed(2, SPEED);
+        zRobotSetMotorSpeed(1, -AVOID_SPEED);
+        zRobotSetMotorSpeed(2, AVOID_SPEED);
+
 
         passCounter++;
+
 
         if (passCounter >= PASS_STEPS)
         {
@@ -235,39 +436,62 @@ void controlTask()
     }
 
 
-    //sväng tillbacka till linjen 
+    // ==================================================
+    // STEG 5
+    // SVÄNG TILLBAKA MOT LINJEN
+    // ==================================================
 
     else if (robotState == TURN_TO_LINE)
-{
-    if (INSIDE_IS_LEFT)
     {
-        zRobotSetMotorSpeed(1, TURN_SPEED);
-        zRobotSetMotorSpeed(2, TURN_SPEED);
-    }
-    else
-    {
-        zRobotSetMotorSpeed(1, -TURN_SPEED);
-        zRobotSetMotorSpeed(2, -TURN_SPEED);
+        /*
+           Samma svängriktning som TURN_PARALLEL.
+           Nu pekar roboten tillbaka mot linjen.
+        */
+
+        if (insideTurn < 0)
+        {
+            zRobotSetMotorSpeed(1, TURN_SPEED);
+            zRobotSetMotorSpeed(2, TURN_SPEED);
+        }
+
+        else
+        {
+            zRobotSetMotorSpeed(1, -TURN_SPEED);
+            zRobotSetMotorSpeed(2, -TURN_SPEED);
+        }
+
+
+        turnCounter++;
+
+
+        if (turnCounter >= TURN_STEPS)
+        {
+            turnCounter = 0;
+
+            robotState = FIND_LINE;
+        }
     }
 
-    turnCounter++;
 
-    if (turnCounter >= TURN_STEPS)
-    {
-        turnCounter = 0;
-        robotState = FIND_LINE;
-    }
-}
+    // ==================================================
+    // STEG 6
+    // KÖR TILLS LINJEN HITTAS
+    // ==================================================
 
-// hitta linjen 
     else if (robotState == FIND_LINE)
     {
-        // Kör framåt mot linjen
-        zRobotSetMotorSpeed(1, -SPEED);
-        zRobotSetMotorSpeed(2, SPEED);
+        zRobotSetMotorSpeed(1, -AVOID_SPEED);
+        zRobotSetMotorSpeed(2, AVOID_SPEED);
 
 
-        // När minst en sensor hittar svart
+        /*
+           Så länge båda sensorerna är på vitt fortsätter
+           vi framåt.
+
+           När minst en sensor träffar svart får den redan
+           fungerande line-followingen ta över direkt.
+        */
+
         if (lineState != S1_OUT_S2_OUT)
         {
             obstacleCooldown = COOLDOWN_STEPS;
@@ -278,25 +502,27 @@ void controlTask()
 }
 
 
+// ======================================================
+// SETUP
+// ======================================================
 
-
-void setup() 
+void setup()
 {
+    zInitialize();
 
 
-   zInitialize(); 
-   Serial.begin(9600);
-
-//linjesensor 
- zScheduleTask(
-        banaTask,
-        pdMS_TO_TICKS(100), // lägg bana task i sceudlern och kör den var 100ms
+    // TASK 1 - linjesensor
+    zScheduleTask(
+        lineTask,
+        pdMS_TO_TICKS(100),
         pdMS_TO_TICKS(20)
     );
 
 
-
- //ultraljud
+    // TASK 2 - ultraljud
+    //
+    // Labmaterialet anger minst ca 100 ms
+    // mellan ultraljudsmätningarna.
     zScheduleTask(
         ultrasonicTask,
         pdMS_TO_TICKS(100),
@@ -304,18 +530,22 @@ void setup()
     );
 
 
-//  motorstyrning
+    // TASK 3 - motorstyrning
     zScheduleTask(
         controlTask,
         pdMS_TO_TICKS(100),
         pdMS_TO_TICKS(20)
     );
 
+
     zStart();
 }
 
-void loop() 
-{
 
-   
+// ======================================================
+// LOOP ANVÄNDS INTE
+// ======================================================
+
+void loop()
+{
 }
