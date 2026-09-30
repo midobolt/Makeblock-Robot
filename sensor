@@ -11,14 +11,14 @@ const int OBSTACLE_DISTANCE = 20;
 
 
 // Normal körning på linjen
-const int SPEED = 80;
+const int SPEED = 90;
 
 // Kör lite lugnare bredvid hindret
-const int AVOID_SPEED = 70;
+const int AVOID_SPEED = 80;
 
 // Svänghastighet
-const int TURN_SPEED = 80;
-
+const int TURN_SPEED = 90;
+  
 
 // ======================================================
 // HINDERUNDVIKNING
@@ -31,11 +31,11 @@ const int TURN_STEPS = 4;
 
 // Hur långt roboten flyttar sig IN i banan.
 // Större värde = större avstånd från hindret.
-const int MOVE_INSIDE_STEPS = 11;
+const int MOVE_INSIDE_STEPS = 16;
 
 // Hur långt roboten kör bredvid hindret.
 // Större värde = passerar hindret längre innan återgång.
-const int PASS_STEPS = 16;
+const int PASS_STEPS = 10;
 
 // Hur länge samma hinder ignoreras efteråt
 const int COOLDOWN_STEPS = 8;
